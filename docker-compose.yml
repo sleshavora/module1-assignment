@@ -1,28 +1,24 @@
 version: "3.9"
-
 services:
-
-  # ── MQTT Broker (Mosquitto) ────────────────────────────────────────────────
   mosquitto:
     image: eclipse-mosquitto:2.0
     container_name: smartfactory-mosquitto
     ports:
-      - "1883:1883"    # Plain MQTT
-      - "9001:9001"    # WebSocket (optional)
+      - "1883:1883"
+      - "9001:9001"
     volumes:
-      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./config:/mosquitto/config
       - mosquitto-data:/mosquitto/data
       - mosquitto-logs:/mosquitto/log
     restart: unless-stopped
 
-  # ── AMQP Broker (RabbitMQ) ────────────────────────────────────────────────
   rabbitmq:
     image: rabbitmq:3.13-management
     container_name: smartfactory-rabbitmq
     hostname: smartfactory-rabbit
     ports:
-      - "5672:5672"    # AMQP
-      - "15672:15672"  # Management UI (http://localhost:15672  guest/guest)
+      - "5672:5672"
+      - "15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
@@ -36,9 +32,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── CoAP does not require a broker — the Python server (Task 2) runs locally ─
-
-  # ── InfluxDB (optional — for time-series storage extension) ───────────────
   influxdb:
     image: influxdb:2.7
     container_name: smartfactory-influxdb
@@ -55,7 +48,7 @@ services:
       - influxdb-data:/var/lib/influxdb2
     restart: unless-stopped
     profiles:
-      - optional   # start with: docker compose --profile optional up -d
+      - optional
 
 volumes:
   mosquitto-data:
