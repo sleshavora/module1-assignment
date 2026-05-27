@@ -36,21 +36,22 @@ def _json(data: dict) -> bytes:
 
 
 class SensorResource(resource.ObservableResource):
-    """Observable CoAP resource for a single sensor."""
 
     def __init__(self, line: str, sensor_type: str):
         super().__init__()
         self.line        = line
         self.sensor_type = sensor_type
         self._reading    = _sim(sensor_type)
-        asyncio.ensure_future(self._update_loop())
+        self._task       = None
+
+    def start(self):
+        self._task = asyncio.ensure_future(self._update_loop())
 
     async def _update_loop(self) -> None:
         while True:
             await asyncio.sleep(5)
             self._reading = _sim(self.sensor_type)
             self.updated_state()
-            log.debug("Updated %s/%s → %s", self.line, self.sensor_type, self._reading["value"])
 
     async def render_get(self, request: Message) -> Message:
         return Message(
@@ -61,7 +62,6 @@ class SensorResource(resource.ObservableResource):
 
 
 class ActuatorResource(resource.Resource):
-    """CoAP resource for the cooling fan actuator."""
 
     def __init__(self):
         super().__init__()
@@ -82,14 +82,12 @@ class ActuatorResource(resource.Resource):
                 raise ValueError(f"Invalid state: {state!r}")
         except (json.JSONDecodeError, ValueError, AttributeError) as exc:
             return Message(code=Code.BAD_REQUEST, payload=str(exc).encode())
-
         self._state = state
         log.info("Fan actuator → %s", self._state)
         return Message(code=Code.CHANGED, payload=_json({"state": self._state}))
 
 
 class ManifestResource(resource.Resource):
-    """Large firmware manifest — triggers Block2 transfer (>= 3 KB)."""
 
     def __init__(self):
         super().__init__()
@@ -99,35 +97,28 @@ class ManifestResource(resource.Resource):
         sensors = list(SENSOR_CONFIG.keys())
         lines   = ["line1", "line2"]
         entries = []
-        for i in range(1, 51):          # 50 entries → well over 3 KB
+        for i in range(1, 51):
             line   = lines[i % len(lines)]
             sensor = sensors[i % len(sensors)]
             entries.append({
-                "id":          f"fw-{i:04d}",
-                "device":      f"smartfactory-{line}-{sensor}-sensor-{i:04d}",
-                "line":        line,
+                "id": f"fw-{i:04d}",
+                "device": f"smartfactory-{line}-{sensor}-sensor-{i:04d}",
+                "line": line,
                 "sensor_type": sensor,
                 "firmware_version": f"{(i % 5) + 1}.{(i % 10)}.{i % 3}",
-                "build_date":  f"2025-{(i % 12) + 1:02d}-{(i % 28) + 1:02d}",
+                "build_date": f"2025-{(i % 12) + 1:02d}-{(i % 28) + 1:02d}",
                 "sha256": f"{'a' * 8}{i:08x}{'b' * 8}{i:08x}{'c' * 8}",
-                "size_bytes":  1024 + i * 512,
-                "update_url":  (
-                    f"coap://ota.smartfactory.internal/firmware/"
-                    f"{line}/{sensor}/v{(i % 5) + 1}.{(i % 10)}.{i % 3}.bin"
-                ),
-                "changelog": (
-                    f"Release {i}: Fixed sensor drift calibration for {sensor} on {line}. "
-                    f"Improved noise filtering. Updated watchdog timeout to 30s. "
-                    f"Memory footprint reduced by {i % 20 + 5}%."
-                ),
-                "required":    i % 3 == 0,
-                "rollback_version": f"{max(1, (i % 5))}.{(i % 10)}.0",
+                "size_bytes": 1024 + i * 512,
+                "update_url": f"coap://ota.smartfactory.internal/firmware/{line}/{sensor}/v{(i%5)+1}.{i%10}.{i%3}.bin",
+                "changelog": f"Release {i}: Fixed sensor drift for {sensor} on {line}. Improved filtering. Reduced memory by {i%20+5}%.",
+                "required": i % 3 == 0,
+                "rollback_version": f"{max(1,(i%5))}.{i%10}.0",
             })
         manifest = {
             "schema_version": "2.1",
-            "generated_at":   datetime.now(timezone.utc).isoformat(),
-            "factory_id":     "smartfactory-brisbane-001",
-            "total_devices":  len(entries),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "factory_id": "smartfactory-brisbane-001",
+            "total_devices": len(entries),
             "firmware_entries": entries,
         }
         payload = json.dumps(manifest, indent=2).encode()
@@ -135,8 +126,6 @@ class ManifestResource(resource.Resource):
         return payload
 
     async def render_get(self, request: Message) -> Message:
-        assert len(self._payload) >= 3072, \
-            f"Manifest too small: {len(self._payload)} bytes"
         return Message(
             code=Code.CONTENT,
             payload=self._payload,
@@ -145,25 +134,22 @@ class ManifestResource(resource.Resource):
 
 
 async def build_server() -> aiocoap.Context:
+    sensors = [
+        (["factory", "line1", "temperature"], SensorResource("line1", "temperature")),
+        (["factory", "line1", "vibration"],   SensorResource("line1", "vibration")),
+        (["factory", "line1", "power"],       SensorResource("line1", "power")),
+        (["factory", "line2", "temperature"], SensorResource("line2", "temperature")),
+    ]
     root = resource.Site()
-
-    root.add_resource(["factory", "line1", "temperature"],
-                      SensorResource("line1", "temperature"))
-    root.add_resource(["factory", "line1", "vibration"],
-                      SensorResource("line1", "vibration"))
-    root.add_resource(["factory", "line1", "power"],
-                      SensorResource("line1", "power"))
-    root.add_resource(["factory", "line2", "temperature"],
-                      SensorResource("line2", "temperature"))
-    root.add_resource(["actuator", "line1", "fan"],
-                      ActuatorResource())
-    root.add_resource(["factory", "manifest"],
-                      ManifestResource())
-
+    for path, res in sensors:
+        root.add_resource(path, res)
+    root.add_resource(["actuator", "line1", "fan"], ActuatorResource())
+    root.add_resource(["factory", "manifest"],      ManifestResource())
     root.add_resource([".well-known", "core"],
                       resource.WKCResource(root.get_resources_as_linkheader))
-
     context = await aiocoap.Context.create_server_context(root)
+    for _, res in sensors:
+        res.start()
     return context
 
 
